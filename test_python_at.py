@@ -2,22 +2,36 @@ import time
 from datetime import datetime
 import serial
 import logging
-logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
 
 
-def send_command(device, cmd, status_validation=False, response_validation=False, repeat_cnt=1):
-	# send at command and returns response
+def send_command(device, cmd, status_validation=False, response_validation=False, repeat_cnt=1, wait_after_command=1.5):
+	"""
+	Send command to device, wait for answer and return response.
+	Return dictionary with response and other information (should be object)
+
+	:param device
+	:param cmd
+	:param status_validation #should validate status, if not OK, repeat or break
+	:param response_validation #validate if response contain specific string
+	:param repeat_cnt #repeats in case of validation failure
+	:param wait_after_command #time in seconds for wait after command was sended to the device
+	"""
 	for loop_number in range(repeat_cnt):
 		time.sleep(0.5) 	# technical break
 		logging.info("Sending: %s | Loop: %d" % (cmd, loop_number))
 		at_send_timestamp = datetime.timestamp(datetime.now())
 		device.write(str.encode(cmd + '\r'))
-		while device.in_waiting == 0:
-			time.sleep(0.01)
+		time.sleep(wait_after_command)
+		for t in range(100):
+			if device.in_waiting > 0:
+				break
+			time.sleep(0.1)
+			logging.debug("Waiting for device buffer, bytes: %d" % device.in_waiting)
 		at_response_timestamp = datetime.timestamp(datetime.now())
+		logging.info("Data in device buffer: %d" % device.in_waiting)
 		logging.info("Received response for: %s" % cmd)
 		response = device.read(device.in_waiting).decode()
-		device.in_waiting
 		response = response.replace('\r', '')
 		response = response.strip().split('\n')
 		response_dict = {
@@ -45,16 +59,16 @@ def send_command(device, cmd, status_validation=False, response_validation=False
 		else:
 			logging.info("Sending AT command %s ended with success \n -------------" % cmd)
 			return response_dict
-	logging.error("Sending AT command %s ended with error" % cmd)
+	logging.error("Sending AT command %s ended with error  \n -------------" % cmd)
 	return False
 
 
 def is_at_response_contains(response, search_str):
 	for response_line in response:
-		if response_line == search_str:
+		if search_str in response_line:
 			logging.info("AT contains [%s]" % search_str)
 			return 1
-	logging.warning("AT response doesn't contains %s" % search_str)
+	logging.warning("AT response doesn't contains [%s]" % search_str)
 	return 0
 
 
@@ -64,26 +78,27 @@ def simcom_ftp_check(device):
 	#return
 
 	ip_command = "AT+CGDCONT=1,\"IP\",\"iot.static\""
+	ping_cmd = "AT+SNPING4=\"51.83.45.158\",10,32,1000"
 
 	commands = (
-		["ATI", 1, "OK", 1],
-		["AT+CFUN=0", 1, "OK", 3],
-		["ATI", 1, "OK", 1],
-		["AT+CFUN=1", 1, "OK", 3],
-		["AT+CREG=0", 1, "OK", 1],
-		["AT+CREG?", 1, "+CREG: 0,1", 5],
-		["AT+CGDCONT?", 1, "OK", 1],
-		[ip_command, 1, "OK", 1],
-		["AT+CGDCONT?", 1, "OK", 1],
-		["AT+CNACT=1,1", 1, "OK", 5],
-		["AT+CNACT?", 1, "OK", 1]
-		#["at+snpdpid=1", 1, "OK"],
-		#["at+snping4=\"51.83.45.158\",10,32,1000 ", 1]
+		["ATI", 1, False, 1],
+		#["AT+CFUN=0", 1, False, 3],
+		#["ATI", 1, False, 1],
+		#["AT+CFUN=1", 1, False, 3],
+		#["AT+CREG=0", 1, False, 1],
+		#["AT+CREG?", 1, "+CREG: 0,1", 5],
+		#["AT+CGDCONT?", 1, False, 1],
+		#[ip_command, 1, False, 1],
+		#["AT+CGDCONT?", 1, False, 1],
+		#["AT+CNACT=1,1", 1, False, 5],
+		#["AT+CNACT?", 1, False, 1],
+		#["at+snpdpid=1", 1, False, 1],
+		[ping_cmd, 0, False, 1]
 	)
-	send_command_set(commands, device)
+	send_command_set(device, commands)
 
 
-def send_command_set(commands, device):
+def send_command_set(device, commands):
 	# command defined as: [command, status, response_contains]
 	break_on_error = True
 	logging.info("Start executing command set: %s" % str(commands))
@@ -98,9 +113,40 @@ def send_command_set(commands, device):
 	logging.info("Stop executing commands set")
 
 
+def send_TCP_data(device):
+	send_command(device, "AT+CREG=0", True, False, 1, 1)
+	send_command(device, "AT+CREG?", True, "+CREG: 0,1", 1, 1)
+	send_command(device, "AT+CGACT?", True, False, 1, 2)
+	send_command(device, "AT+CPSI?", True, False, 1, 0)
+	send_command(device, "at+cncfg=0,1,\"iot.static\"", True, False, 1, 0)
+
+
+def send_ping(device):
+	ping_cmd = "AT+SNPING4=\"51.83.45.158\",5,32,1000"
+	send_command(device, ping_cmd, True, False, 1, 10)
+
+
+def test(device):
+	send_command()
+
+
 def main():
 	device = serial.Serial("COM9", 115200, timeout=10)
-	simcom_ftp_check(device)
+	send_command(device, "AT+CFUN=0", True, False, 2, 3)
+	send_command(device, "AT+CFUN=1", True, False, 2, 3)
+	time.sleep(3)
+	send_command(device, "AT+CPSI?", True, False, 1, 1)
+	send_command(device, "at+cncfg=0,1,\"iot.static\"", True, False, 1, 1)
+	if send_command(device, "at+cnact=0,1", True, False, 3, 1):
+		time.sleep(1)
+		bytes_to_send = 1400
+		if send_command(device, "at+caopen=0,0,\"TCP\",\"51.83.45.158\",81", True, "+CAOPEN: 0,0", 3, 3):
+			if send_command(device, "at+casend=0,%d" % bytes_to_send, False, False, 1, 0):
+				time.sleep(1)
+				send_command(device, "|" * bytes_to_send, True, "+CASEND: 0,0,%d" % bytes_to_send, 1, 1)
+
+	send_command(device, "at+caclose=0", True, False, 1, 0)
+	send_command(device, "at+cnact=0,0", True, False, 1, 1)
 
 
 if __name__ == "__main__":
